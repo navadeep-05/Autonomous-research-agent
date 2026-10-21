@@ -1,0 +1,11 @@
+groq
+python-dotenv
+langgraph
+langchain-core
+tavily-python
+chromadb
+streamlit
+sentence-transformers
+pypdf
+numpy
+torchvision
