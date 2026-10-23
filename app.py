@@ -202,40 +202,67 @@ if state:
         
     with t2:
         st.subheader("🔀 Autonomous LangGraph Orchestration Workflow")
-        st.caption("Sequential state transition trace executed autonomously by the research agent from start to finish:")
+        st.caption(
+            "Sequential state transition trace executed autonomously by the research agent from start to finish:"
+        )
 
         st.markdown("""
-```mermaid
-graph TD
-    UQ["1. User Question"] --> RP["2. Research Planner"]
-    RP --> WS["3a. Web Search (Tavily)"]
-    RP --> LR["3b. Local RAG (all-MiniLM-L6-v2)"]
-    WS --> WE["Web Evidence"]
-    LR --> LD["Local Documents"]
-    WE --> EL["4. Evidence Layer"]
-    LD --> EL
-    EL --> SE["5. Source Evaluation"]
-    SE --> GD["6. Gap Detection"]
-    GD -->|"Gaps found & iterations < 2"| RS["7. Targeted Re-search"]
-    RS -->|"Loop back"| GD
-    GD -->|"No gaps OR max rounds (2)"| CV["8. Claim Verification"]
-    CV --> CT["9. Semantic Citation Tracking"]
-    CT --> FR["10. Final Cited Report (Downloadable)"]
+    ```mermaid
+    %%{init: {
+    "theme": "base",
+      "themeVariables": {
+        "primaryTextColor": "#000000",
+        "textColor": "#000000",
+        "lineColor": "#555555"
+    }
+    }}%%
 
-    style UQ fill:#e3f2fd,stroke:#1565c0,stroke-width:2px
-    style RP fill:#f3e5f5,stroke:#7b1fa2,stroke-width:2px
-    style WS fill:#e8f5e9,stroke:#2e7d32,stroke-width:2px
-    style LR fill:#e8f5e9,stroke:#2e7d32,stroke-width:2px
-    style EL fill:#fff9c4,stroke:#fbc02d,stroke-width:2px
-    style SE fill:#fff3e0,stroke:#e65100,stroke-width:2px
-    style GD fill:#fbe9e7,stroke:#d84315,stroke-width:2px
-    style RS fill:#ffebee,stroke:#c62828,stroke-width:2px
-    style CV fill:#e0f2f1,stroke:#00695c,stroke-width:2px
-    style CT fill:#ede7f6,stroke:#4527a0,stroke-width:2px
-    style FR fill:#e8eaf6,stroke:#283593,stroke-width:2px
-```
-""")
+    graph TD
+        UQ["1. User Question"] --> RP["2. Research Planner"]
 
+        RP --> WS["3a. Web Search (Tavily)"]
+        RP --> LR["3b. Local RAG (all-MiniLM-L6-v2)"]
+
+        WS --> WE["Web Evidence"]
+        LR --> LD["Local Documents"]
+
+        WE --> EL["4. Evidence Layer"]
+        LD --> EL
+
+        EL --> SE["5. Source Evaluation"]
+        SE --> GD["6. Gap Detection"]
+
+        GD -->|"Gaps found & iterations < 2"| RS["7. Targeted Re-search"]
+        RS -->|"Loop back"| GD
+
+        GD -->|"No gaps OR max rounds (2)"| CV["8. Claim Verification"]
+
+        CV --> CT["9. Semantic Citation Tracking"]
+        CT --> FR["10. Final Cited Report (Downloadable)"]
+
+        style UQ fill:#e3f2fd,stroke:#1565c0,stroke-width:2px,color:#000000
+        style RP fill:#f3e5f5,stroke:#7b1fa2,stroke-width:2px,color:#000000
+
+        style WS fill:#e8f5e9,stroke:#2e7d32,stroke-width:2px,color:#000000
+        style LR fill:#e8f5e9,stroke:#2e7d32,stroke-width:2px,color:#000000
+
+        style WE fill:#263238,stroke:#546e7a,stroke-width:2px,color:#ffffff
+        style LD fill:#263238,stroke:#546e7a,stroke-width:2px,color:#ffffff
+
+        style EL fill:#fff9c4,stroke:#fbc02d,stroke-width:2px,color:#000000
+        style SE fill:#fff3e0,stroke:#e65100,stroke-width:2px,color:#000000
+
+        style GD fill:#fbe9e7,stroke:#d84315,stroke-width:2px,color:#000000
+        style RS fill:#ffebee,stroke:#c62828,stroke-width:2px,color:#000000
+
+        style CV fill:#e0f2f1,stroke:#00695c,stroke-width:2px,color:#000000
+        style CT fill:#ede7f6,stroke:#4527a0,stroke-width:2px,color:#000000
+
+        style FR fill:#e8eaf6,stroke:#283593,stroke-width:2px,color:#000000
+        ```
+        """)
+
+        
         st.markdown("#### 🔄 Sequential State Execution Log")
         wf_cols = st.columns(2)
         with wf_cols[0]:

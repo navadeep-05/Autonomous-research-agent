@@ -12,22 +12,32 @@ client = Groq(
 
 MODEL = "openai/gpt-oss-20b"
 
+# Maximum evidence items to send for gap analysis
+MAX_EVIDENCE_FOR_GAPS = 12
+
+
 def detect_gaps(question, evidence):
     """
     Identify important information that is still missing.
+    Returns a list of gap queries, or empty list if no gaps found.
+    Never raises.
     """
+
+    # Cap evidence to keep prompt within token limits
+    capped = evidence[:MAX_EVIDENCE_FOR_GAPS]
 
     # Convert evidence list into readable text
     evidence_text = "\n".join(
-        f"- {item}" for item in evidence
+        f"- {str(item)[:200]}" for item in capped
     )
 
-    response = client.chat.completions.create(
-        model=MODEL,
-        messages=[
-            {
-                "role": "system",
-                "content": """
+    try:
+        response = client.chat.completions.create(
+            model=MODEL,
+            messages=[
+                {
+                    "role": "system",
+                    "content": """
 You are an efficient, objective research gap detection auditor.
 
 Analyze the user's research question against the collected evidence.
@@ -35,43 +45,51 @@ Analyze the user's research question against the collected evidence.
 Decision Criteria:
 - If the collected evidence already provides a reasonable, factual, and informative answer to the core question, you MUST return:
 NO_GAPS
-- ONLY if a major, critical aspect is completely unaddressed and essential to answering the question, return a maximum of 1 or 2 specific search queries.
+- ONLY if a major, critical aspect is completely unaddressed and essential to answering the question, return a maximum of 1 specific search query.
 - Do NOT invent pedantic, trivial, or minor academic gaps. Value speed and conciseness.
 """
-            },
-            {
-                "role": "user",
-                "content": f"""
+                },
+                {
+                    "role": "user",
+                    "content": f"""
 Research question:
 {question}
 
 Collected evidence:
 {evidence_text}
 """
-            }
-        ],
-        max_completion_tokens=500
-    )
+                }
+            ],
+            max_completion_tokens=300
+        )
 
-    result = response.choices[0].message.content.strip()
+        result = response.choices[0].message.content
+        if not result:
+            return []
 
-    # Stop if the research appears complete
-    if "NOGAPS" in result.upper().replace(" ", "").replace("_", ""):
+        result = result.strip()
+
+        # Stop if the research appears complete
+        if "NOGAPS" in result.upper().replace(" ", "").replace("_", ""):
+            return []
+
+        gaps = []
+
+        # Convert numbered output into a Python list
+        for line in result.splitlines():
+
+            line = line.strip()
+
+            if not line:
+                continue
+
+            gap = line.lstrip("0123456789.-) ").strip()
+
+            if gap:
+                gaps.append(gap)
+
+        return gaps
+
+    except Exception as e:
+        print(f"[gap_detector] Error: {e}")
         return []
-
-    gaps = []
-
-    # Convert numbered output into a Python list
-    for line in result.splitlines():
-
-        line = line.strip()
-
-        if not line:
-            continue
-
-        gap = line.lstrip("0123456789.-) ").strip()
-
-        if gap:
-            gaps.append(gap)
-
-    return gaps
