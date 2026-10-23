@@ -182,12 +182,11 @@ if state:
     else:
         st.success("✅ **Research Thorough**: No remaining gaps identified after evaluation.")
 
-    t1, t2, t3, t4, t5, t6 = st.tabs([
+    t1, t2, t3, t4, t5 = st.tabs([
         "📄 Research Report",
         "🔀 LangGraph Workflow",
         "🎯 Plan & Gaps",
         "💡 Evidence Items",
-        "🌐 Verified Sources",
         "🔍 Claim Verification & Citations"
     ])
     
@@ -299,33 +298,20 @@ if state:
             else:
                 st.info("No gaps detected. Evidence comprehensively answers the core question.")
 
-    with t3:
+    with t4:
         st.subheader(f"💡 Extracted Evidence ({len(state.get('evidence', []))} facts)")
         for i, ev in enumerate(state.get("evidence", []), 1):
             st.markdown(f"**{i}.** {ev}")
 
-    with t4:
-        st.subheader(f"📚 Sources Ledger ({len(sources)} unique references)")
-        for s in sources:
-            url = s.get("url", "")
-            sid = s.get("source_id", "SRC")
-            kind = source_kind(url)
-            title = s.get("title") or url or "Untitled Document"
-            
-            if url.startswith("local://"):
-                st.markdown(f"**[{sid}]** 📚 `{title}` — *{kind}*")
-                with st.expander("View local excerpt", expanded=False):
-                    st.write(s.get("content", ""))
-            else:
-                icon = "📄" if "pdf" in kind.lower() or "arxiv" in kind.lower() else "🌐"
-                st.markdown(f"**[{sid}]** {icon} [{title}]({url}) — *{kind}*")
-                with st.expander("View web snippet", expanded=False):
-                    st.write(s.get("content", ""))
-
     with t5:
-        st.subheader("🔍 Claim Verification & Semantic Source Alignment")
-        st.caption("Each claim is categorized by truth groundness and matched to the closest source passage using SentenceTransformers cosine similarity.")
-        
+        st.markdown("### 🔍 Claim Verification & Semantic Source Alignment")
+        st.caption(
+            "Claims are categorized by how strongly the retrieved research evidence supports them. "
+            "SentenceTransformers cosine similarity matches each claim to recorded source content; "
+            "matches below 0.30 are left uncited."
+        )
+
+        st.subheader("Claim verification results")
         for c in cites:
             claim_text = c.get("claim", "")
             sid = c.get("source_id")
@@ -338,8 +324,11 @@ if state:
                 title = src.get("title") or url
                 ref = f"[{sid}: {title}]({url})" if not url.startswith("local://") else f"**{sid}** (`{title}`)"
             else:
-                ref = "*(No source passage met $\\ge 0.30$ semantic threshold)*"
+                ref = "*(No source met the 0.30 similarity threshold)*"
             
             st.markdown(f"{ICON.get(status, '❔')} **{claim_text}**")
-            st.markdown(f"&nbsp;&nbsp;&nbsp;&nbsp;↳ **Source Match**: {ref} (Similarity: `{score:.2f}`)")
+            st.markdown(f"&nbsp;&nbsp;&nbsp;&nbsp;↳ **Closest source match**: {ref} (Cosine similarity: `{score:.2f}`)")
+            if src:
+                with st.expander("View matched source excerpt", expanded=False):
+                    st.write(src.get("content", ""))
             st.markdown("---")
