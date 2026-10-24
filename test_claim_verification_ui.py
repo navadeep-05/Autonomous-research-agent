@@ -3,6 +3,18 @@ from unittest.mock import patch
 from streamlit.testing.v1 import AppTest
 
 
+def test_knowledge_base_sidebar_explains_upload_and_hides_index_details():
+    at = AppTest.from_file("app.py").run(timeout=60)
+
+    assert not at.exception, at.exception
+    captions = "\n".join(item.value for item in at.caption)
+    markdown = "\n".join(item.value for item in at.markdown)
+    assert "Upload documents related to your question" in captions
+    assert "search them alongside web results" in captions
+    assert "Index Status" not in markdown
+    assert "View indexed files" not in markdown
+
+
 def test_empty_citations_render_unverified_evidence_with_source_context():
     evidence = [f"Extracted research fact {index}." for index in range(1, 9)]
     at = AppTest.from_file("app.py")

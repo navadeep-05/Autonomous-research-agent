@@ -4,7 +4,7 @@ import streamlit as st
 
 from agent.graph import MAX_GAP_ROUNDS, MAX_TASKS, claim_status, source_kind, stream_graph
 from RAG.loader import DATA_DIR
-from RAG.retriever import build_index, index_size
+from RAG.retriever import build_index
 
 st.set_page_config(
     page_title="Autonomous Research Agent",
@@ -83,7 +83,10 @@ ICON = {
 os.makedirs(DATA_DIR, exist_ok=True)
 with st.sidebar:
     st.header("📚 Local Knowledge Base")
-    st.caption("Documents in `data/` are parsed, chunked, and embedded into local vector storage.")
+    st.caption(
+        "Upload documents related to your question, then rebuild the index so the "
+        "agent can search them alongside web results."
+    )
     
     uploads = st.file_uploader(
         "Upload reference files (PDF, TXT, MD)",
@@ -104,13 +107,6 @@ with st.sidebar:
                 n = build_index()
             st.success(f"Indexed {n} chunks")
             st.rerun()
-
-    files = [n for n in os.listdir(DATA_DIR) if n.lower().endswith((".pdf", ".txt", ".md"))]
-    st.markdown(f"**Index Status**: `{index_size()} chunks` from `{len(files)} file(s)`")
-    if files:
-        with st.expander("📁 View indexed files", expanded=False):
-            for fname in files:
-                st.write(f"• {fname}")
 
     st.markdown("---")
     st.markdown("### ⚙️ Guardrails & Constraints")
