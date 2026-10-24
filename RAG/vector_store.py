@@ -24,12 +24,22 @@ class VectorStore:
         self.vectors = vectors if self.vectors is None else np.vstack([self.vectors, vectors])
         self.chunks.extend(chunks)
 
-    def search(self, query_vec, k=4):
+    def search(self, query_vec, k=4, exclude_names=None):
         if self.vectors is None or not self.chunks:
             return []
-        scores = self.vectors @ query_vec  # cosine: vectors are normalised
+        excluded = set(exclude_names or ())
+        allowed = [
+            index for index, chunk in enumerate(self.chunks)
+            if chunk.get("name") not in excluded
+        ]
+        if not allowed:
+            return []
+        scores = self.vectors[allowed] @ query_vec  # cosine: vectors are normalised
         top = np.argsort(scores)[::-1][:k]
-        return [{**self.chunks[i], "score": float(scores[i])} for i in top]
+        return [
+            {**self.chunks[allowed[index]], "score": float(scores[index])}
+            for index in top
+        ]
 
     def save(self):
         os.makedirs(STORE_DIR, exist_ok=True)

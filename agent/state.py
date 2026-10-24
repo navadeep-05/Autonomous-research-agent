@@ -22,6 +22,7 @@ def create_initial_state(question):
 
         # Useful facts & info extracted from search results
         "evidence":[],
+        "evidence_origins":[],
 
         # evaluate the search sources
         "source_evaluations": [],
@@ -31,12 +32,19 @@ def create_initial_state(question):
 
         # Verifies whether important claims are supported by evidence.
         "verified_claims":[],
+        "claim_verifications":[],
         
         # creates structured source records with unique IDs (e.g., SRC-001)
         "sources": [],
 
         # Maps verified claims to their respective source IDs
         "citations": [],
+
+        # Closest retrieved source matches for extracted evidence
+        "evidence_matches": [],
+
+        # Non-fatal claim verification error, if verification could not complete
+        "verification_error": "",
 
         # Final generated research report text
         "report":[],

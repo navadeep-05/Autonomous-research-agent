@@ -1,9 +1,24 @@
+import re
+
 from RAG.chunker import chunk_text
 from RAG.embeddings import embed
 from RAG.loader import load_documents
 from RAG.vector_store import VectorStore
 
 _store = None
+PROJECT_OVERVIEW = "research_agent_overview.md"
+
+
+def is_project_specific_query(query):
+    normalized = " ".join(re.sub(r"[^a-z0-9]+", " ", str(query).casefold()).split())
+    project_context = (
+        r"\bautonomous research agent\b",
+        r"\bthis (?:project|repository|repo|codebase|app)\b",
+        r"\bour (?:project|repository|repo|codebase|app)\b",
+        r"\bproject (?:architecture|workflow|implementation|structure|files)\b",
+        r"\b(?:repository|repo|codebase) (?:architecture|workflow|implementation|structure)\b",
+    )
+    return any(re.search(pattern, normalized) for pattern in project_context)
 
 
 def _get_store():
@@ -36,7 +51,16 @@ def retrieve(query, k=3, min_score=0.25):
     store = _get_store()
     if store.size() == 0:
         return []
-    hits = store.search(embed([query])[0], k)
+    excluded_names = (
+        set()
+        if is_project_specific_query(query)
+        else {PROJECT_OVERVIEW}
+    )
+    hits = store.search(
+        embed([query])[0],
+        k,
+        exclude_names=excluded_names,
+    )
     return [
         {
             "title": h["name"],

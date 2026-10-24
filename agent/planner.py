@@ -31,7 +31,8 @@ def create_research_plan(question):
 You are a research planning agent.
 
 Your job is to break the user's research question
-into 2 to 3 clear and independent research tasks.
+into exactly 3 clear and independent research subtasks.
+Planning is a separate phase, not one of the research subtasks.
 
 Each task should focus on one specific aspect of
 the question.
@@ -75,7 +76,7 @@ Do not provide explanations or answers.
                 plan.append(task)
 
         # Return the final research plan
-        return plan if plan else [question]
+        return plan[:3] if plan else [question]
 
     except Exception as e:
         print(f"[planner] Error: {e}")

@@ -11,12 +11,12 @@ from agent.evidence import extract_evidence
 from agent.source_evaluator import evaluate_source
 from agent.gap_detector import detect_gaps
 from agent.citation_tracker import create_source_records, create_citation
-from agent.claim_verifier import verify_claims
+from agent.claim_verifier import parse_verification_results, verify_claims
 from agent.report_generator import generate_report
 from RAG.embeddings import embed
 from RAG.retriever import retrieve as kb_retrieve
 
-MAX_TASKS = 2
+MAX_TASKS = 3
 MAX_GAP_ROUNDS = 1
 MAX_GAPS_PER_ROUND = 1
 LOCAL_K = 2
@@ -28,9 +28,11 @@ class ResearchState(TypedDict):
     plan: list
     search_results: list
     evidence: list
+    evidence_origins: list
     source_evaluations: list
     gaps: list
     verified_claims: list
+    claim_verifications: list
     sources: list
     citations: list
     report: Any
@@ -50,13 +52,16 @@ def source_kind(url):
 
 def claim_status(text):
     up = text.upper()
-    for part in (up[-30:], up):
-        if "UNSUPPORTED" in part:
-            return "UNSUPPORTED"
-        if "PARTIALLY" in part:
-            return "PARTIAL"
-        if "SUPPORTED" in part:
-            return "SUPPORTED"
+    match = re.search(
+        r"\[(PARTIALLY SUPPORTED|PARTIAL|UNSUPPORTED|SUPPORTED|UNKNOWN|UNVERIFIED)\]",
+        up,
+    )
+    if match:
+        return {
+            "PARTIALLY SUPPORTED": "PARTIAL",
+            "UNKNOWN": "UNKNOWN",
+            "UNVERIFIED": "UNKNOWN",
+        }.get(match.group(1), match.group(1))
     return "UNKNOWN"
 
 
@@ -97,27 +102,40 @@ def research_one(query):
     local = kb_retrieve(query, k=LOCAL_K)
     combined = list(web) + list(local)
     if not combined:
-        return ({"task": query, "result": []}, [],
+        return ({"task": query, "result": []}, [], [],
                 {"task": query, "evaluation": "No sources found."})
-    new_evidence = extract_evidence(query, combined)
-    if isinstance(new_evidence, str):
-        new_evidence = [new_evidence]
+
+    new_evidence, evidence_origins = [], []
+    for source in combined:
+        extracted = extract_evidence(query, [source])
+        if isinstance(extracted, str):
+            extracted = [extracted]
+        new_evidence.extend(extracted)
+        evidence_origins.extend([source.get("url", "")] * len(extracted))
+
     text = "\n\n".join(f"[{r.get('url', '')}]\n{r.get('content', '')[:500]}" for r in combined[:4])
     evaluation = evaluate_source(text)
-    return ({"task": query, "result": combined}, list(new_evidence),
+    return ({"task": query, "result": combined}, list(new_evidence), evidence_origins,
             {"task": query, "evaluation": evaluation})
 
 
 def _run_queries(state, queries):
     results = list(state["search_results"])
     evidence = list(state["evidence"])
+    evidence_origins = list(state.get("evidence_origins", []))
     evals = list(state["source_evaluations"])
     for q in queries:
-        entry, new_ev, ev = research_one(q)
+        entry, new_ev, new_origins, ev = research_one(q)
         results.append(entry)
         evidence.extend(new_ev)
+        evidence_origins.extend(new_origins)
         evals.append(ev)
-    return {"search_results": results, "evidence": evidence, "source_evaluations": evals}
+    return {
+        "search_results": results,
+        "evidence": evidence,
+        "evidence_origins": evidence_origins,
+        "source_evaluations": evals,
+    }
 
 
 # ---------------- nodes ----------------
@@ -154,54 +172,199 @@ def sources_node(state):
 
 def verify_node(state):
     if not state["evidence"]:
-        return {"verified_claims": []}
-    return {"verified_claims": parse_claims(verify_claims(state["evidence"]))}
+        return {
+            "verified_claims": [],
+            "claim_verifications": [],
+            "verification_error": "",
+        }
+    try:
+        sources = state.get("sources", [])
+        source_id_by_url = {
+            source.get("url"): source.get("source_id")
+            for source in sources
+            if source.get("url") and source.get("source_id")
+        }
+        origins = state.get("evidence_origins", [])
+        allowed_source_ids = [
+            [source_id_by_url[origins[index]]]
+            if index < len(origins) and origins[index] in source_id_by_url
+            else []
+            for index in range(len(state["evidence"]))
+        ]
+        results = parse_verification_results(
+            verify_claims(
+                state["evidence"],
+                sources,
+                allowed_source_ids=allowed_source_ids,
+                raise_on_error=True,
+            ),
+            state["evidence"],
+            sources,
+            allowed_source_ids=allowed_source_ids,
+        )
+    except Exception as exc:
+        print(f"[graph] Claim verification failed: {exc}")
+        return {
+            "verified_claims": [],
+            "claim_verifications": [],
+            "verification_error": "Claim verification failed. Check the server logs and verifier configuration.",
+        }
+    claims = [f"{result['claim']} [{result['status']}]" for result in results]
+    verification_warnings = [
+        result["verification_warning"]
+        for result in results
+        if result.get("verification_warning")
+    ]
+    return {
+        "verified_claims": claims,
+        "claim_verifications": results,
+        "verification_error": "; ".join(verification_warnings),
+    }
 
 
 def citations_node(state):
-    claims, sources = state["verified_claims"], state["sources"]
-    if not claims or not sources:
-        return {"citations": []}
+    verifications = state.get("claim_verifications", [])
+    sources = state["sources"]
+    evidence = state["evidence"]
+    evidence_origins = state.get("evidence_origins", [])
+    if not sources:
+        return {
+            "citations": [
+                {
+                    "claim": result["claim"],
+                    "status": (
+                        "UNVERIFIED"
+                        if result["status"] in {"SUPPORTED", "PARTIAL"}
+                        else result["status"]
+                    ),
+                    "verifier_status": result["status"],
+                    "source_id": None,
+                    "score": None,
+                    "quote": "",
+                    "evidence_index": result["evidence_index"],
+                    "origin_source_id": (
+                        result["allowed_source_ids"][0]
+                        if len(result.get("allowed_source_ids", [])) == 1
+                        else None
+                    ),
+                }
+                for result in verifications
+            ],
+            "evidence_matches": [
+                {
+                    "evidence": item,
+                    "source_id": None,
+                    "origin_url": evidence_origins[index]
+                    if index < len(evidence_origins) else None,
+                    "score": None,
+                }
+                for index, item in enumerate(evidence)
+            ],
+        }
     src_vecs = embed([(s.get("content") or s.get("title") or "")[:1000] for s in sources])
-    cleaned = [re.sub(r"\[(SUPPORTED|PARTIALLY SUPPORTED|PARTIAL|UNSUPPORTED)\]", "", re.sub(r"^\W*\d+[.)]\s*", "", c), flags=re.I).strip() for c in claims]
-    sims = embed(cleaned) @ src_vecs.T
+    source_indexes_by_id = {
+        source.get("source_id"): index for index, source in enumerate(sources)
+    }
+    source_id_by_url = {
+        source.get("url"): source.get("source_id")
+        for source in sources
+        if source.get("url") and source.get("source_id")
+    }
     cites = []
-    for i, claim in enumerate(claims):
-        j = int(np.argmax(sims[i]))
-        score = float(sims[i][j])
-        cite = create_citation(claim, sources[j]["source_id"] if score >= MIN_CITE_SCORE else None)
-        cite["score"] = round(score, 2)
+    claim_sims = embed([verification["claim"] for verification in verifications]) @ src_vecs.T if verifications else []
+    for i, verification in enumerate(verifications):
+        claim = verification["claim"]
+        match = claim_sims[i]
+        allowed_ids = verification.get("allowed_source_ids", [])
+        allowed_indexes = [
+            source_indexes_by_id[source_id]
+            for source_id in allowed_ids
+            if source_id in source_indexes_by_id
+        ]
+        selected_id = verification.get("source_id")
+        selected_index = next(
+            (
+                index for index, source in enumerate(sources)
+                if source.get("source_id") == selected_id and index in allowed_indexes
+            ),
+            None,
+        )
+        j = selected_index
+        if j is None and allowed_indexes:
+            j = max(allowed_indexes, key=lambda index: float(match[index]))
+        score = float(match[j]) if j is not None else None
+        source_id = (
+            sources[j]["source_id"]
+            if j is not None and score is not None and score >= MIN_CITE_SCORE
+            else None
+        )
+        verifier_status = verification["status"]
+        status = verifier_status
+        if status in {"SUPPORTED", "PARTIAL"} and source_id is None:
+            status = "UNVERIFIED"
+        cite = create_citation(claim, source_id)
+        cite["status"] = status
+        cite["verifier_status"] = verifier_status
+        cite["quote"] = verification.get("quote", "")
+        cite["evidence_index"] = verification["evidence_index"]
+        cite["origin_source_id"] = (
+            allowed_ids[0] if len(allowed_ids) == 1 else None
+        )
+        cite["score"] = round(score, 2) if score is not None else None
         cites.append(cite)
-    return {"citations": cites}
+
+    evidence_matches = []
+    if evidence:
+        evidence_sims = embed([str(item) for item in evidence]) @ src_vecs.T
+        for i, item in enumerate(evidence):
+            origin_url = evidence_origins[i] if i < len(evidence_origins) else None
+            origin_id = source_id_by_url.get(origin_url)
+            j = source_indexes_by_id.get(origin_id)
+            score = float(evidence_sims[i][j]) if j is not None else None
+            evidence_matches.append({
+                "evidence": item,
+                "source_id": origin_id,
+                "origin_url": origin_url,
+                "score": round(score, 2) if score is not None else None,
+            })
+    return {"citations": cites, "evidence_matches": evidence_matches}
 
 
 def report_node(state):
-    claim_lines = [
-        f"{c['claim']} [{c['source_id']}]" if c.get("source_id") else f"{c['claim']} [no source match]"
-        for c in state["citations"]
-    ]
-    body = generate_report(state["question"], state["evidence"],
-                           "\n".join(claim_lines), state["sources"])
-    if isinstance(body, list):
-        body = "\n\n".join(str(x) for x in body)
-
-    counts = {}
-    for c in state["citations"]:
-        k = claim_status(c["claim"])
-        counts[k] = counts.get(k, 0) + 1
+    body = generate_report(
+        state["question"],
+        state["evidence"],
+        state.get("claim_verifications", []),
+        state["sources"],
+        state["citations"],
+        MIN_CITE_SCORE,
+    )
+    status_counts = {
+        status: sum(
+            1 for cite in state["citations"]
+            if (cite.get("status") or claim_status(cite.get("claim", ""))) == status
+        )
+        for status in ("SUPPORTED", "PARTIAL", "UNSUPPORTED", "UNKNOWN", "UNVERIFIED")
+    }
+    status_counts["UNVERIFIED"] += max(
+        0,
+        len(state["evidence"]) - len(state["citations"]),
+    )
     footer = [
-        "\n\n---\n\n## Verification & Completeness",
-        f"- Claims checked: {len(state['citations'])} (supported {counts.get('SUPPORTED', 0)}, "
-        f"partially supported {counts.get('PARTIAL', 0)}, unsupported {counts.get('UNSUPPORTED', 0)})",
+        "\n\n## Verification and completeness",
+        f"- Claims checked: {len(state['citations'])}",
+        f"- Supported: {status_counts['SUPPORTED']}",
+        f"- Partially supported: {status_counts['PARTIAL']}",
+        f"- Unsupported: {status_counts['UNSUPPORTED']}",
+        f"- Unknown: {status_counts['UNKNOWN']}",
+        f"- Unverified: {status_counts['UNVERIFIED']}",
         f"- Gap-research rounds: {state['iteration']} (max {MAX_GAP_ROUNDS})",
     ]
-    if state["gaps"]:
-        footer.append("- Unresolved gaps:")
-        footer += [f"  - {g}" for g in state["gaps"]]
-    else:
-        footer.append("- Unresolved gaps: none")
-
-    return {"report": str(body) + "\n".join(footer) + format_sources(state["sources"])}
+    footer.append(
+        "- Unresolved gaps:\n" + "\n".join(f"  - {gap}" for gap in state["gaps"])
+        if state["gaps"] else "- Unresolved gaps: none"
+    )
+    return {"report": body + "\n\n" + "\n".join(footer) + format_sources(state["sources"])}
 
 
 def route_after_gaps(state):

@@ -1,7 +1,8 @@
 import os
+import re
 import streamlit as st
 
-from agent.graph import claim_status, source_kind, stream_graph
+from agent.graph import MAX_GAP_ROUNDS, MAX_TASKS, claim_status, source_kind, stream_graph
 from RAG.loader import DATA_DIR
 from RAG.retriever import build_index, index_size
 
@@ -74,7 +75,8 @@ ICON = {
     "SUPPORTED": "✅",
     "PARTIAL": "⚠️",
     "UNSUPPORTED": "❌",
-    "UNKNOWN": "❔"
+    "UNKNOWN": "❔",
+    "UNVERIFIED": "⚪",
 }
 
 # ---------- sidebar: local knowledge base ----------
@@ -112,9 +114,9 @@ with st.sidebar:
 
     st.markdown("---")
     st.markdown("### ⚙️ Guardrails & Constraints")
-    st.markdown("""
+    st.markdown(f"""
     - **Model**: `openai/gpt-oss-20b`
-    - **Max Tasks**: `2`
+    - **Research Subtasks**: `{MAX_TASKS}` (planning is a separate phase)
     - **Max Gap Rounds**: `1`
     - **Dense Embedding**: `all-MiniLM-L6-v2`
     - **Local Similarity Cutoff**: `0.25`
@@ -158,19 +160,37 @@ if state:
         report = "\n\n".join(str(x) for x in report)
     sources = state.get("sources", [])
     cites = state.get("citations", [])
-    by_id = {s["source_id"]: s for s in sources}
+    verified_claims = state.get("verified_claims", [])
+    evidence_matches = state.get("evidence_matches", [])
+    by_id = {
+        s.get("source_id"): s
+        for s in sources
+        if s.get("source_id")
+    }
     n_local = sum(1 for s in sources if s.get("url", "").startswith("local://"))
     n_web = len(sources) - n_local
 
-    # Calculate claim verification breakdown
-    counts = {"SUPPORTED": 0, "PARTIAL": 0, "UNSUPPORTED": 0, "UNKNOWN": 0}
-    for c in cites:
-        k = claim_status(c.get("claim", ""))
-        counts[k] = counts.get(k, 0) + 1
+    # Calculate claim verification breakdown from verifier results, even if
+    # citation matching did not produce a row for every verified claim.
+    counts = {
+        "SUPPORTED": 0,
+        "PARTIAL": 0,
+        "UNSUPPORTED": 0,
+        "UNKNOWN": 0,
+        "UNVERIFIED": 0,
+    }
+    if cites:
+        for citation in cites:
+            status = citation.get("status") or claim_status(citation.get("claim", ""))
+            counts[status] = counts.get(status, 0) + 1
+    else:
+        for claim in verified_claims:
+            status = claim_status(claim)
+            counts[status] = counts.get(status, 0) + 1
 
     st.markdown("### 📊 Research Execution Summary")
     cols = st.columns(6)
-    cols[0].metric("Tasks Planned", len(state.get("plan", [])))
+    cols[0].metric("Research Subtasks", len(state.get("plan", [])))
     cols[1].metric("Web Sources", n_web)
     cols[2].metric("Local Documents", n_local)
     cols[3].metric("Evidence Extracted", len(state.get("evidence", [])))
@@ -178,7 +198,11 @@ if state:
     cols[5].metric("Gap-Loop Rounds", state.get("iteration", 0))
 
     if state.get("gaps"):
-        st.warning(f"⚠️ **{len(state['gaps'])} unaddressed gap(s)** remain after max iterations ({state.get('iteration', 0)}/2). See the 'Plan & Gaps' tab.")
+        st.warning(
+            f"⚠️ **{len(state['gaps'])} unaddressed gap(s)** remain after "
+            f"max iterations ({state.get('iteration', 0)}/{MAX_GAP_ROUNDS}). "
+            "See the 'Plan & Gaps' tab."
+        )
     else:
         st.success("✅ **Research Thorough**: No remaining gaps identified after evaluation.")
 
@@ -205,7 +229,7 @@ if state:
             "Sequential state transition trace executed autonomously by the research agent from start to finish:"
         )
 
-        st.markdown("""
+        workflow_diagram = """
     ```mermaid
     %%{init: {
     "theme": "base",
@@ -231,10 +255,10 @@ if state:
         EL --> SE["5. Source Evaluation"]
         SE --> GD["6. Gap Detection"]
 
-        GD -->|"Gaps found & iterations < 2"| RS["7. Targeted Re-search"]
+        GD -->|"Gaps found & iterations < <MAX_GAP_ROUNDS>"| RS["7. Targeted Re-search"]
         RS -->|"Loop back"| GD
 
-        GD -->|"No gaps OR max rounds (2)"| CV["8. Claim Verification"]
+        GD -->|"No gaps OR max rounds (<MAX_GAP_ROUNDS>)"| CV["8. Claim Verification"]
 
         CV --> CT["9. Semantic Citation Tracking"]
         CT --> FR["10. Final Cited Report (Downloadable)"]
@@ -259,7 +283,8 @@ if state:
 
         style FR fill:#e8eaf6,stroke:#283593,stroke-width:2px,color:#000000
         ```
-        """)
+        """
+        st.markdown(workflow_diagram.replace("<MAX_GAP_ROUNDS>", str(MAX_GAP_ROUNDS)))
 
         
         st.markdown("#### 🔄 Sequential State Execution Log")
@@ -267,17 +292,17 @@ if state:
         with wf_cols[0]:
             st.markdown(f"""
             - **1. User Question**: `{state.get('question', '')[:60]}...`
-            - **2. Research Planner**: Generated `{len(state.get('plan', []))}` sub-tasks
+            - **2. Research Planner**: Generated `{len(state.get('plan', []))}` research subtasks (max {MAX_TASKS})
             - **3. Dual Retrieval**:
               - Web Search: `{n_web}` sources
               - Local RAG: `{n_local}` passages
-            - **4. Evidence Layer**: `{len(state.get('evidence', []))}` verified facts extracted
+            - **4. Evidence Layer**: `{len(state.get('evidence', []))}` candidate evidence items extracted
             - **5. Source Evaluation**: Evaluated quality, authority, recency
             """)
         with wf_cols[1]:
             st.markdown(f"""
             - **6. Gap Detection**: Identified completeness & missing context
-            - **7. Re-Search Loop**: Executed `{state.get('iteration', 0)}` round(s) *(max 2)*
+            - **7. Re-Search Loop**: Executed `{state.get('iteration', 0)}` round(s) *(max {MAX_GAP_ROUNDS})*
             - **8. Claim Verification**: `{len(cites)}` claims audited (`{counts['SUPPORTED']}` supported)
             - **9. Citation Tracking**: Dense vector cosine matching $\\ge 0.30$
             - **10. Final Cited Report**: Formatted markdown with references
@@ -286,9 +311,12 @@ if state:
     with t3:
         col_p, col_g = st.columns(2)
         with col_p:
-            st.subheader("🧭 Research Plan")
+            st.subheader(f"🧭 Research Subtasks (up to {MAX_TASKS})")
+            st.caption("Planning is a separate phase; these are the named research queries the agent executes.")
             for i, t in enumerate(state.get("plan", []), 1):
                 st.markdown(f"**{i}.** {t}")
+            if not state.get("plan"):
+                st.info("No research subtasks were generated.")
         with col_g:
             st.subheader("🕳️ Identified Gaps")
             gaps = state.get("gaps", [])
@@ -307,16 +335,61 @@ if state:
         st.markdown("### 🔍 Claim Verification & Semantic Source Alignment")
         st.caption(
             "Claims are categorized by how strongly the retrieved research evidence supports them. "
-            "SentenceTransformers cosine similarity matches each claim to recorded source content; "
-            "matches below 0.30 are left uncited."
+            "SentenceTransformers cosine similarity matches claims to recorded source content; "
+            "matches below 0.30 are left uncited. Similarity is a retrieval match, not proof of truth."
         )
 
         st.subheader("Claim verification results")
+        def claim_key(value):
+            value = re.sub(r"^\W*\d+[.)]\s*", "", str(value))
+            value = re.sub(
+                r"\[(SUPPORTED|PARTIALLY SUPPORTED|PARTIAL|UNSUPPORTED|UNKNOWN|UNVERIFIED)\]",
+                "",
+                value,
+                flags=re.I,
+            )
+            return " ".join(value.casefold().split())
+
+        verified_by_key = {claim_key(claim): claim for claim in verified_claims}
+        cited_keys = {claim_key(c.get("claim", "")) for c in cites}
+        unmatched_claims = [
+            claim for claim in verified_claims if claim_key(claim) not in cited_keys
+        ]
+        represented_evidence = {
+            citation.get("evidence_index")
+            for citation in cites
+            if isinstance(citation.get("evidence_index"), int)
+        }
+        evidence = state.get("evidence", [])
+        unrepresented_evidence = [
+            (index, item)
+            for index, item in enumerate(evidence)
+            if index not in represented_evidence
+        ]
+        if not cites:
+            unrepresented_evidence = list(enumerate(evidence))
+        needs_evidence_fallback = bool(unrepresented_evidence)
+
+        if state.get("verification_error"):
+            st.error(state["verification_error"])
+        if not cites:
+            st.warning(
+                "No claim citations were produced. Research evidence below is marked UNVERIFIED; "
+                "no claim status is inferred."
+            )
+        elif unmatched_claims:
+            st.warning(
+                "Some verifier claims have no matching citation. Their verifier status is preserved, "
+                "but no source match is inferred."
+            )
+
         for c in cites:
             claim_text = c.get("claim", "")
             sid = c.get("source_id")
-            score = c.get("score", 0.0)
-            status = claim_status(claim_text)
+            score = c.get("score")
+            verified_claim = verified_by_key.get(claim_key(claim_text))
+            status = c.get("status") or claim_status(verified_claim or claim_text)
+            display_status = "UNVERIFIED" if status in {"UNKNOWN", "UNVERIFIED"} else status
             
             src = by_id.get(sid)
             if src:
@@ -326,9 +399,55 @@ if state:
             else:
                 ref = "*(No source met the 0.30 similarity threshold)*"
             
-            st.markdown(f"{ICON.get(status, '❔')} **{claim_text}**")
-            st.markdown(f"&nbsp;&nbsp;&nbsp;&nbsp;↳ **Closest source match**: {ref} (Cosine similarity: `{score:.2f}`)")
+            st.markdown(f"{ICON.get(display_status, '❔')} **{display_status}** — {claim_text}")
+            score_label = f"`{score:.2f}`" if isinstance(score, (int, float)) else "unavailable"
+            st.markdown(f"&nbsp;&nbsp;&nbsp;&nbsp;↳ **Closest source match**: {ref} (Cosine similarity: {score_label})")
+            if c.get("quote"):
+                st.markdown(f"**Verifier quote (exact):**\n\n> {c['quote']}")
+            if c.get("verifier_status") and c["verifier_status"] != status:
+                st.caption(
+                    f"Verifier assessment: {c['verifier_status']}; "
+                    f"final status is {status} because the source did not meet alignment requirements."
+                )
             if src:
                 with st.expander("View matched source excerpt", expanded=False):
                     st.write(src.get("content", ""))
+            elif c.get("origin_source_id") in by_id:
+                origin_source = by_id[c["origin_source_id"]]
+                with st.expander("View originating source (not cited)", expanded=False):
+                    st.write(origin_source.get("content", ""))
             st.markdown("---")
+
+        for claim in unmatched_claims:
+            status = claim_status(claim)
+            st.markdown(f"{ICON.get(status, '❔')} **{claim}**")
+            st.markdown("&nbsp;&nbsp;&nbsp;&nbsp;↳ **Source match**: unavailable (no aligned citation)")
+            st.markdown("---")
+
+        if needs_evidence_fallback:
+            st.markdown("#### Extracted evidence — UNVERIFIED")
+            st.caption(
+                "The closest-source score below helps locate relevant research text; "
+                "it does not verify the evidence or establish that source as its definitive origin."
+            )
+            if not unrepresented_evidence:
+                st.info("No extracted evidence is available to display.")
+            for index, item in unrepresented_evidence:
+                st.markdown(f"⚪ **UNVERIFIED** — {item}")
+                match = evidence_matches[index] if index < len(evidence_matches) else {}
+                src = by_id.get(match.get("source_id"))
+                score = match.get("score")
+                if src:
+                    title = src.get("title") or src.get("url") or src["source_id"]
+                    score_label = f"`{score:.2f}`" if isinstance(score, (int, float)) else "unavailable"
+                    st.markdown(
+                        f"&nbsp;&nbsp;&nbsp;&nbsp;↳ **Origin source (not a verification)**: "
+                        f"**{src['source_id']}** ({title}; cosine similarity: {score_label})"
+                    )
+                    with st.expander("View closest source passage", expanded=False):
+                        st.write(src.get("content", ""))
+                else:
+                    st.markdown(
+                        "&nbsp;&nbsp;&nbsp;&nbsp;↳ **Source provenance**: unavailable"
+                    )
+                st.markdown("---")
